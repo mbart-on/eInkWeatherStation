@@ -1,0 +1,1409 @@
+esphome:
+  name: weather-station
+  friendly_name: Weather_Station
+  includes:
+    - common.h  
+  libraries:
+    - bblanchon/ArduinoJson
+
+  on_boot:
+    priority: 399
+    then:
+
+      # =========================================
+      # 1️⃣ Obsługa przycisku / OTA
+      # =========================================
+
+      - lambda: |-
+          pinMode(4, INPUT_PULLUP);
+          id(green_last) = (digitalRead(4) == LOW);
+
+          esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+          if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1) {
+            id(ota_mode) = !id(ota_mode);
+            ESP_LOGI("WAKE", "Wake by button -> OTA mode=%d", id(ota_mode));
+            id(green_ignore_until_release) = true;
+          }
+
+      # =========================================
+      # 2️⃣ Odczyt czasu
+      # =========================================
+
+      - pcf8563.read_time
+
+      # =========================================
+      # 3️⃣ Decyzja czy włączamy WiFi
+      # =========================================
+
+      - wifi.disable
+
+      - if:
+          condition:
+            lambda: |-
+              return ((id(hourGlob) >= 6 && id(hourGlob) <= 23) ||
+                      (id(hourGlob) >= 0 && id(hourGlob) < 1))
+                    && (id(minGlob) % 10 == 0);
+          then:
+
+            # ---------------------------------
+            # Włącz WiFi i zbierz dane
+            # ---------------------------------
+
+            - wifi.enable
+            - delay: 5s
+
+            - script.execute: collectTemperatureData
+            - script.execute: collectHumidityData
+            - script.execute: collectPreasureData
+
+            - delay: 1s   # daj czas na zapis globalnych
+
+            - wifi.disable
+
+      # =========================================
+      # 4️⃣ Rysowanie (JUŻ BEZ HTTP)
+      # =========================================
+
+      - script.execute: changeColor
+      - script.execute: displayClear
+      - script.execute: drawTime
+      - script.execute: drawForecastIcons
+      - script.execute: drawCurrentForecastDataBigIcon
+      - script.execute: drawTemepratureGraph
+      - script.execute: drawHumidityGraph
+      - script.execute: drawPreasureGraph
+      - script.execute: displayRefresh
+
+      # =========================================
+      # 5️⃣ Deep sleep
+      # =========================================
+
+      - if:
+          condition:
+            lambda: 'return id(ota_mode) == 0;'
+          then:
+            - deep_sleep.enter
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "93efh9Ufphf4SNCFkUw1vPWBDm8TumUbLD4UZhYA0+c="
+
+ota:
+  - platform: esphome
+    password: "b5218c91fa112184622b96bb979e8fd7"
+
+wifi:
+  id: testpwe    
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Weather-Station Fallback Hotspot"
+    password: "KQnWA18bYpvi"
+
+captive_portal:
+
+deep_sleep:
+  id: spac
+  #run_duration: 2s
+  sleep_duration: 58s
+  wakeup_pin: GPIO4
+  wakeup_pin_mode: INVERT_WAKEUP
+
+  #wakeup_pin: 
+  #  number: 18
+  #  inverted: False
+  #  allow_other_uses: true
+  #  ignore_pin_validation_error: False
+  #wakeup_pin_mode: INVERT_WAKEUP
+
+
+#  wakeup_pin: GPIO19  # Wybudzanie z przerwania na GPIO47
+#  wakeup_pin_mode: KEEP_AWAKE  # Tryb wejścia z podciągnięciem (lub zmień w zależności od GT911)
+
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+
+i2c:
+  - id: bus_a
+    sda:
+      number: GPIO19
+      #allow_other_uses: true
+    scl:
+      number: GPIO20
+    frequency: 100khz
+    # There are some problems with i2c scan, so turn scan off if problems appear on your board
+    scan: false
+
+
+
+
+
+
+
+#external_components:
+#  - source: github://nickolay/esphome-lilygo-t547plus
+#    components: ["t547"]
+  # https://github.com/kaeltis/esphome-lilygo-t547plus
+#  - source: github://kaeltis/esphome-lilygo-t547plus
+#    components: ["lilygo_t5_47_battery"]
+
+
+
+
+
+
+font:
+
+  - file: fonts/GoogleSans-Bold.ttf
+    id: wykres
+    size: 15
+  - file: fonts/GoogleSans-Bold.ttf
+    id: fontSmallText
+    size: 20
+  - file: fonts/OpenSans-Medium.ttf
+    id: currentTemperatureFont
+    size: 30    
+  - file: fonts/OpenSans-Medium.ttf
+    id: font_footer
+    size: 28    
+  - file: fonts/GoogleSans-Bold.ttf
+    id: fontClock
+    size: 80
+    glyphs: [':', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'O', 'T', 'A']
+
+    # https://pictogrammers.github.io/@mdi/font/5.3.45/
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: fontBigIcons
+    size: 120
+    glyphs: 
+      - "\U000F0594" # clear-night
+      - "\U000F0590" # cloudy
+      - "\U000F0595" # partlycloudy
+      - "\U000F0591" # fog      
+      - "\U000F0592" # hail
+      - "\U000F0593" # lightning
+      - "\U000F067E" # lightning-rainy
+      - "\U000F0596" # pouring
+      - "\U000F0597" # rainy
+      - "\U000F0F36" # snowy
+      - "\U000F067F" # snowy-rainy
+      - "\U000F0599" # sunny
+      - "\U000F059D" # windy
+      - "\U000F059E" # windy-variant
+      - "\U000F0F38" # exceptional
+      - "\U000F0238" # heating
+      - "\U000F01F5" # idle
+      - "\U000F092E" # out of Wi-FI
+
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: fontMedIcons
+    size: 40
+    glyphs:
+      - "\U000F0238" # heating
+      - "\U000F050F" # idle
+
+
+  - file: "fonts/weathericons-regular-webfont.ttf"
+    id: fontSmallIcons
+    size: 30
+    glyphs:
+      - "\uF08C" # No Data
+      - "\uF00D" # Clear Day
+      - "\uF002"
+      - "\uF003"
+      - "\uF02E" # Clear Night
+      - "\uF013" # Cloudy
+      - "\uF019" # Rain
+      - "\uF01B" # Thunderstorm
+      - "\uF076" # Snow
+      - "\uF014" # Fog
+      - "\uF055" # Day Showers
+      - "\uF03A" # Night Showers
+      - "\uF056" # Day Thunderstorm
+      - "\uF03B" # Night Thunderstorm
+      - "\uF00C" # Windy
+      - "\uF081" # Hail
+      - "\uf051" # Sunrise
+      - "\uf0c9" # Sunset
+      - "\uF009" # Drizzle
+      - "\uF017" # Freezing Drizzle: Light and dense intensity
+      - "\uF01A" # Rain showers: Slight, moderate, and violent
+      - "\uF01E" # Thunderstorm: Slight or moderate
+      - "\uF01D" # Thunderstorm with slight and heavy hail
+      - "\uF086" # Cloudy night
+      - "\uF029" # Shower night
+      - "\uF04A" # Foggy night
+      - "\uF058" # wi-direction-up (North)
+      - "\uF057" # wi-direction-up-right (North-East)
+      - "\uF04D" # wi-direction-right (East)
+      - "\uF088" # wi-direction-down-right (South-East)
+      - "\uF044" # wi-direction-down (South)
+      - "\uF043" # wi-direction-down-left (South-West)
+      - "\uF048" # wi-direction-left (West)
+      - "\uF087" # wi-direction-up-left (North-West)
+      - "\uF050" # wind icon
+
+  - file: fonts/weathericons-regular-webfont.ttf
+    id: fontMediumlIcons
+    size: 50
+    glyphs:            
+      - "\uf053" # Thermometer
+      - "\uf07a" # Humidity
+
+
+  - file: "fonts/weathericons-regular-webfont.ttf"
+    id: fontBigIcons_small
+    size: 46
+    glyphs:
+      - "\uF08C" # No Data
+      - "\uF00D" # Clear Day
+      - "\uF002"
+      - "\uF003"
+      - "\uF02E" # Clear Night
+      - "\uF013" # Cloudy
+      - "\uF019" # Rain
+      - "\uF01B" # Thunderstorm
+      - "\uF076" # Snow
+      - "\uF014" # Fog
+      - "\uF055" # Day Showers
+      - "\uF03A" # Night Showers
+      - "\uF056" # Day Thunderstorm
+      - "\uF03B" # Night Thunderstorm
+      - "\uF00C" # Windy
+      - "\uF081" # Hail
+      - "\uf051" # Sunrise
+      - "\uf0c9" # Sunset
+      - "\uf053" # Thermometer
+      - "\uf07a" # Humidity
+      - "\uF009" # Drizzle
+      - "\uF017" # Freezing Drizzle: Light and dense intensity
+      - "\uF01A" # Rain showers: Slight, moderate, and violent
+      - "\uF01E" # Thunderstorm: Slight or moderate
+      - "\uF01D" # Thunderstorm with slight and heavy hail
+      - "\uF086" # Cloudy night
+      - "\uF029" # Shower night
+      - "\uF04A" # Foggy night
+      - "\uF058" # wi-direction-up (North)
+      - "\uF057" # wi-direction-up-right (North-East)
+      - "\uF04D" # wi-direction-right (East)
+      - "\uF088" # wi-direction-down-right (South-East)
+      - "\uF044" # wi-direction-down (South)
+      - "\uF043" # wi-direction-down-left (South-West)
+      - "\uF048" # wi-direction-left (West)
+      - "\uF087" # wi-direction-up-left (North-West)
+      - "\uF050" # wind icon
+
+           
+
+  - file: "fonts/weathericons-regular-webfont.ttf"
+    id: weather_icons
+    size: 80
+    glyphs:
+      - "\uF08C" # No Data
+      - "\uF00D" # Clear Day
+      - "\uF002"
+      - "\uF003"
+      - "\uF02E" # Clear Night
+      - "\uF013" # Cloudy
+      - "\uF019" # Rain
+      - "\uF01B" # Thunderstorm
+      - "\uF076" # Snow
+      - "\uF014" # Fog
+      - "\uF055" # Day Showers
+      - "\uF03A" # Night Showers
+      - "\uF056" # Day Thunderstorm
+      - "\uF03B" # Night Thunderstorm
+      - "\uF00C" # Windy
+      - "\uF081" # Hail
+      - "\uf051" # Sunrise
+      - "\uf0c9" # Sunset
+      - "\uf053" # Thermometer
+      - "\uf07a" # Humidity
+      - "\uF009" # Drizzle
+      - "\uF017" # Freezing Drizzle: Light and dense intensity
+      - "\uF01A" # Rain showers: Slight, moderate, and violent
+      - "\uF01E" # Thunderstorm: Slight or moderate
+      - "\uF01D" # Thunderstorm with slight and heavy hail
+      - "\uF086" # Cloudy night
+      - "\uF029" # Shower night
+      - "\uF04A" # Foggy night
+      - "\uF058" # wi-direction-up (North)
+      - "\uF057" # wi-direction-up-right (North-East)
+      - "\uF04D" # wi-direction-right (East)
+      - "\uF088" # wi-direction-down-right (South-East)
+      - "\uF044" # wi-direction-down (South)
+      - "\uF043" # wi-direction-down-left (South-West)
+      - "\uF048" # wi-direction-left (West)
+      - "\uF087" # wi-direction-up-left (North-West)
+      - "\uF050" # wind icon
+           
+
+
+
+
+
+
+
+
+globals:
+
+  - id: ota_mode
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: green_last
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: green_ignore_until_release
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: preasureGlob
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+    
+  - id: preasureGlobMax
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: preasureGlobMin
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: preasureGlobArray
+    type: float [48]
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: temperatureGlob
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: temperatureBalkonGlob
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+
+  - id: temperatureGlobMax
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: temperatureGlobMin
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: temperatureGlobArray
+    type: float [48]
+    restore_value: yes  # Przywraca wartość po restarcie
+        
+
+  - id: humidityGlob
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: humidityBalkonGlob
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+
+  - id: humidityGlobMax
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: humidityGlobMin
+    type: float
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: humidityGlobArray
+    type: float [48]
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: weatherIconGlobal
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastIconGlob1
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastTempGlob1
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastIconGlob2
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastTempGlob2
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastIconGlob3
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastTempGlob3
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastIconGlob4
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastTempGlob4
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastIconGlobOpenMeteo
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+
+  - id: forecastWindSpeedGlobOpenMeteo
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+  - id: forecastWindDirectionGlobOpenMeteo
+    type: std::string
+    restore_value: yes  # Przywraca wartość po restarcie
+
+
+  - id: mqtt_binary_sensor_state
+    type: bool
+    restore_value: true
+    initial_value: "false"
+
+  - id: drawPreasure
+    type: int
+    initial_value: '0'
+
+  - id: drawTemep
+    type: int
+    initial_value: '0'
+
+  - id: drawClock
+    type: int
+    initial_value: '0'    
+
+  - id: temepFlah
+    type: int
+    initial_value: '0'
+
+  - id: humFlag
+    type: int
+    initial_value: '0'
+
+  - id: presFlag
+    type: int
+    initial_value: '0'
+
+  - id: foreFlag
+    type: int
+    initial_value: '0'
+
+  - id: drawForecast
+    type: int
+    initial_value: '0'
+    
+
+  - id: displayFlag
+    type: int
+    initial_value: '0'
+
+  - id: displayColorFlag
+    type: int
+    initial_value: '0'    
+
+  - id: frontGlob
+    type: int
+    restore_value: yes
+
+
+  - id: backGlob
+    type: int
+    restore_value: yes
+
+
+  - id: minGlob
+    type: int
+    restore_value: yes
+    initial_value: '10'    
+
+
+  - id: hourGlob
+    type: int
+    restore_value: yes
+
+  - id: updateON
+    type: std::string
+    restore_value: yes 
+
+
+
+
+
+
+
+#sensor:
+#  - platform: lilygo_t5_47_battery
+#    id: battery
+#    voltage:
+#      id: voltage_sensor
+#      name: "Battery Voltage"
+
+
+
+text_sensor:
+  - platform: template
+    name: "Template Text Sensor"
+    id: otaState
+
+
+
+
+
+display:
+  - platform: waveshare_epaper
+    id: t5_display
+    model: 7.50inv2 # You can use 7.50inv2alt when you draw complex info and it display not good.
+    cs_pin: GPIO10
+    dc_pin: GPIO11
+    reset_pin:
+      number: GPIO12
+      inverted: false
+    busy_pin:
+      number: GPIO13
+      inverted: true
+    #rotation: 270
+    update_interval: never
+
+
+time:
+  - platform: pcf8563
+    id: internal_clock
+    address: 0x51  
+    i2c_id: bus_a
+  - platform: homeassistant
+    id: ntp
+    on_time_sync:
+      then:
+        - pcf8563.write_time
+
+#    on_time:
+#      - seconds: 50     # Uruchom zdarzenie na początku każdej godziny
+#        minutes: 0-59
+#        hours: 0-23     # Oznacza każdą godzinę od 0 do 23
+#        then:
+  
+
+
+ 
+
+          #
+
+
+
+#      - seconds: 0     # Uruchom zdarzenie na początku każdej godziny
+#        minutes: 0-59
+#        hours: 0-23     # Oznacza każdą godzinę od 0 do 23
+#        then:
+#          - wifi.disable
+
+
+
+script:
+  - id: displayRefresh
+    mode: restart
+    then:
+      #- delay: 10s  # Czas opóźnienia, 10 sekund
+      - lambda: |-
+          id(t5_display)->display();  // Aktualizuj ekran
+
+
+  - id: displayClear
+    mode: restart
+    then:
+      - lambda: |-
+          Color back = Color(id(backGlob));
+          id(t5_display)->filled_rectangle(0, 0, 800, 480, back); 
+
+
+  - id: changeColor
+    mode: restart
+    then:
+      lambda: |-
+        id(spac).prevent_deep_sleep();
+        auto now = id(internal_clock).now();  // Użyjemy wewnętrznego zegara (PCF8563)
+        int hour = now.hour;  
+        int  back = 0xFFFFFF;
+        int front = 0x000000;
+        if (hour >= 6 && hour <= 15) 
+          {
+            front = 0xFFFFFF;
+            back = 0x000000;            
+          } 
+        id(backGlob) = back;
+        id(frontGlob) = front;
+      
+
+
+
+
+
+
+# ===========================================Time Section ===============================================
+
+
+  - id: drawTime
+    mode: restart
+    then:
+      lambda: |-
+          ESP_LOGD("tag", "Wartość zmiennej na początki sekcji TIME: %d", id(backGlob));
+          //if(id(displayColorFlag) == 1 && id(drawClock) != 1)
+          //{
+            ESP_LOGD("Display", "Start Drawing");
+            auto now = id(internal_clock).now(); 
+            Color back = Color(id(backGlob));
+            Color front = Color(id(frontGlob));
+            int hour = now.hour;   
+            int min = now.minute;    
+            int mod = min % 5; 
+            // Wyczyszczenie Pola Godziny
+            id(t5_display)->filled_rectangle(0, 0, 200, 150, back); 
+            char timeBuffer[32];
+            char dateBuffer[32];
+            auto timestamp = id(ntp).now().timestamp;
+            strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", localtime(&timestamp));
+            strftime(dateBuffer, sizeof(dateBuffer), "%A %d - %b - %Y", localtime(&timestamp));
+            id(t5_display)->printf(10, 10, id(fontClock), front, TextAlign::TOP_LEFT, "%s", timeBuffer);
+            id(t5_display)->printf(400, 5, id(fontSmallText), front, TextAlign::TOP_CENTER, "%s", dateBuffer);
+            ESP_LOGD("tag", "Wartość zmiennej BACK na początki sekcji TIME: %d", back);
+            ESP_LOGD("tag", "Wartość zmiennej FRONT na początki sekcji TIME: %d", front);
+            ESP_LOGD("Display", "End Drawing");
+            id(drawClock)++;
+            //id(t5_display)->printf(400 / 6, 100, id(fontSmallText), TextAlign::TOP_LEFT, "%d", id(drawClock));
+            id(minGlob) = now.minute;                   
+            id(hourGlob) = hour;    
+            //id(t5_display)->printf(10, 100, id(fontSmallText), front, TextAlign::CENTER, "Updated on: %s", id(updateON).c_str());
+            //id(t5_display)->printf(10, 120, id(fontSmallText), front, TextAlign::CENTER, "OTA mode: %d", id(ota_mode));            
+            bool wifi_state = id(testpwe).is_connected();
+            ESP_LOGD("WIFI", "WiFi connected: %d", wifi_state);           
+          //}
+          
+
+  - id: collectForecastData
+    mode: restart
+    then:
+      lambda: |-
+          auto now = id(internal_clock).now();
+          int hour = now.hour;    
+          std::vector<std::vector<String>> weather_data = getHourlyWeather();
+          if (hour + 2 < weather_data.size()) 
+            {
+            id(forecastIconGlob1) = weather_data[hour+2][2].c_str();
+            id(forecastTempGlob1) = weather_data[hour+2][1].c_str();
+            ESP_LOGD("Forecast", "====================dane zebrane pierwszy IF============", hour);            
+            }
+          if (hour + 4 < weather_data.size()) 
+            {
+            id(forecastIconGlob2) = weather_data[hour+4][2].c_str();
+            id(forecastTempGlob2) = weather_data[hour+4][1].c_str();
+            }
+          if (hour + 6 < weather_data.size()) 
+            {
+            id(forecastIconGlob3) = weather_data[hour+6][2].c_str();
+            id(forecastTempGlob3) = weather_data[hour+6][1].c_str();
+            }
+          if (hour + 8 < weather_data.size()) 
+            {
+            id(forecastIconGlob4) = weather_data[hour+8][2].c_str();
+            id(forecastTempGlob4) = weather_data[hour+8][1].c_str();
+            }
+
+          auto timestamp = id(ntp).now().timestamp;
+          char timeBuffer[6];                // Bufor dla czasu w formacie HH:MM
+          strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", localtime(&timestamp));
+          id(updateON) = std::string(timeBuffer);  // Zapisz do zmiennej globalnej global_time         
+          timeout: 1;
+
+  - id: collectCurrentForecastData
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGD("FORECAST", "---- START collectCurrentForecastData ----");
+
+          bool wifi_state = id(testpwe).is_connected();
+          ESP_LOGD("FORECAST", "WiFi connected: %d", wifi_state);
+
+          auto now = id(internal_clock).now();
+          int hour = now.hour;
+
+          ESP_LOGD("FORECAST", "Current hour: %d", hour);
+
+          std::vector<std::vector<String>> weather_data = getCurrentWeatherOpenMeteo(hour);
+
+          ESP_LOGD("FORECAST", "Vector size: %d", weather_data.size());
+
+          if (weather_data.size() > 0) {
+            ESP_LOGD("FORECAST", "Row size: %d", weather_data[0].size());
+
+            for (int i = 0; i < weather_data[0].size(); i++) {
+              ESP_LOGD("FORECAST", "weather_data[0][%d] = %s", 
+                      i, weather_data[0][i].c_str());
+            }
+
+            id(forecastIconGlobOpenMeteo) = weather_data[0][3].c_str();
+            id(forecastWindSpeedGlobOpenMeteo) = weather_data[0][1].c_str();
+            id(forecastWindDirectionGlobOpenMeteo) = weather_data[0][4].c_str();
+
+            ESP_LOGD("FORECAST", "Assigned values:");
+            ESP_LOGD("FORECAST", "Icon: %s", id(forecastIconGlobOpenMeteo).c_str());
+            ESP_LOGD("FORECAST", "WindSpeed: %s", id(forecastWindSpeedGlobOpenMeteo).c_str());
+            ESP_LOGD("FORECAST", "WindDirection: %s", id(forecastWindDirectionGlobOpenMeteo).c_str());
+          } else {
+            ESP_LOGW("FORECAST", "weather_data is EMPTY!");
+          }
+
+          ESP_LOGD("FORECAST", "---- END collectCurrentForecastData ----");
+
+ 
+
+
+
+  - id: drawForecastIcons
+    mode: restart
+    then:
+      lambda: |-
+          if (id(testpwe).is_connected()){id(collectForecastData).execute();}
+          auto now = id(internal_clock).now();
+          int hour = now.hour;         
+          int xres = 400;
+          int maleX = xres*0.2 + 420;
+          int maleY = 80;
+          int dayY = maleY + 40;
+          int tempY = maleY + 80;
+          Color back = Color(id(backGlob));
+          Color front = Color(id(frontGlob));
+          //id(t5_display)->filled_rectangle(0, 370, 540, 140, back);  // Rysuj kwadrat
+        
+          if (hour+2 < 24){
+          id(t5_display)->printf(maleX, tempY, id(fontSmallText), front, TextAlign::CENTER, "%d:00", hour+2);
+          id(t5_display)->printf(maleX, dayY, id(fontSmallText), front, TextAlign::CENTER, id(forecastTempGlob1).c_str());
+          id(t5_display)->printf(maleX, maleY, id(fontSmallIcons), front, TextAlign::CENTER, id(forecastIconGlob1).c_str());
+          }
+          maleX = xres*0.4 + 400;
+
+          if (hour+4 < 24){
+          id(t5_display)->printf(maleX, tempY, id(fontSmallText), front, TextAlign::CENTER, "%d:00", hour+4);
+          id(t5_display)->printf(maleX, dayY, id(fontSmallText), front, TextAlign::CENTER, id(forecastTempGlob2).c_str());
+          id(t5_display)->printf(maleX, maleY, id(fontSmallIcons), front, TextAlign::CENTER, id(forecastIconGlob2).c_str());
+          }
+          maleX = xres*0.6 + 400;
+
+          if (hour+6 < 24){
+          id(t5_display)->printf(maleX, tempY, id(fontSmallText), front, TextAlign::CENTER, "%d:00", hour+6);
+          id(t5_display)->printf(maleX, dayY, id(fontSmallText), front, TextAlign::CENTER, id(forecastTempGlob3).c_str());
+          id(t5_display)->printf(maleX, maleY, id(fontSmallIcons), front, TextAlign::CENTER, id(forecastIconGlob3).c_str());
+          }
+          maleX = xres*0.8 + 400;
+
+          if (hour+8 < 24){
+          id(t5_display)->printf(maleX, tempY, id(fontSmallText), front, TextAlign::CENTER, "%d:00", hour+8);
+          id(t5_display)->printf(maleX, dayY, id(fontSmallText), front, TextAlign::CENTER, id(forecastTempGlob4).c_str());
+          id(t5_display)->printf(maleX, maleY, id(fontSmallIcons), front, TextAlign::CENTER, id(forecastIconGlob4).c_str());
+          }
+
+
+
+
+  - id: drawCurrentForecastDataBigIcon
+    mode: restart
+    then:
+      lambda: |-
+          if (id(testpwe).is_connected()){id(collectCurrentForecastData).execute();}
+          Color back = Color(id(backGlob));
+          Color front = Color(id(frontGlob));       
+          int weather_icon_x = 400;
+          int weatherBigIconY = 80;
+          //id(t5_display)->filled_rectangle(0, 0, 50, 50, back);  // Rysuj kwadrat
+          id(t5_display)->printf(weather_icon_x, weatherBigIconY, id(weather_icons),front, TextAlign::CENTER, id(forecastIconGlobOpenMeteo).c_str());
+          ESP_LOGD("Display", "End of Display drawCurrentForecastDataBigIcon section");
+
+
+
+
+
+
+
+
+
+
+
+  - id: collectTemperatureData
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGD("TEMP", "===== START collectTemperatureData =====");
+
+          float temperature = getCurrentValue("sensor.kuchnia_temperature");
+          float temperatureBalkon = getCurrentValue("sensor.balkon_temperature");
+
+          ESP_LOGD("TEMP", "Current kitchen temp: %.2f", temperature);
+          ESP_LOGD("TEMP", "Current balkon temp: %.2f", temperatureBalkon);
+
+          float max = -10000;
+          float min = 10000;
+          float temperatura = 0;
+
+          uint32_t start_all = millis();
+
+          for (int i = 1; i < 49; i++) 
+          { 
+            uint32_t start_single = millis();
+
+            temperatura = generateTimeShiftedValue(48 - i, 30, "sensor.kuchnia_temperature");
+
+            uint32_t duration = millis() - start_single;
+
+            ESP_LOGD("TEMP", "i=%d value=%.2f duration=%lu ms", i, temperatura, duration);
+
+            if (temperatura == -100) {
+              ESP_LOGW("TEMP", "⚠ History returned error at i=%d", i);
+            }
+
+            if (temperatura > max) max = temperatura;
+            if (temperatura < min) min = temperatura;
+
+            id(temperatureGlobArray)[i] = temperatura;
+          }
+
+          uint32_t total_duration = millis() - start_all;
+
+          ESP_LOGD("TEMP", "Max=%.2f  Min=%.2f", max, min);
+          ESP_LOGD("TEMP", "Loop duration: %lu ms", total_duration);
+
+          id(temperatureGlobMax) = max;
+          id(temperatureGlobMin) = min;
+          id(temperatureGlob) = temperature;
+          id(temperatureBalkonGlob) = temperatureBalkon;
+
+          ESP_LOGD("TEMP", "===== END collectTemperatureData =====");
+
+  - id: drawTemepratureGraph
+    mode: restart
+    then:
+      - lambda: |-
+
+          ESP_LOGD("TEMP", "---- START drawTemepratureGraph ----");
+
+          Color back = Color(id(backGlob));
+          Color front = Color(id(frontGlob));   
+
+          int graphSectionY = 360;
+          int graphSectionX = 20;
+
+          // =====================================
+          // 1️⃣ Walidacja zakresu
+          // =====================================
+
+          if (id(temperatureGlobMax) <= id(temperatureGlobMin)) {
+            ESP_LOGW("TEMP", "Invalid temperature range (max <= min), skipping graph");
+            return;
+          }
+
+          // =====================================
+          // 2️⃣ Sprawdzenie czy tablica ma dane
+          // =====================================
+
+          bool valid_data = false;
+          for (int i = 1; i < 48; i++) {
+            if (id(temperatureGlobArray)[i] != 0) {
+              valid_data = true;
+              break;
+            }
+          }
+
+          if (!valid_data) {
+            ESP_LOGW("TEMP", "Temperature array empty, skipping graph");
+            return;
+          }
+
+          // =====================================
+          // 3️⃣ Bezpieczna skala
+          // =====================================
+
+          float range = id(temperatureGlobMax) - id(temperatureGlobMin);
+          if (range < 0.1) range = 0.1;
+
+          float wide = 110 / range;
+
+          ESP_LOGD("TEMP", "Range=%.2f  Scale=%.2f", range, wide);
+
+          // =====================================
+          // 4️⃣ Opisy osi
+          // =====================================
+
+          id(t5_display)->printf(graphSectionX, graphSectionY,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f °C", id(temperatureGlobMax));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY,
+                              250, graphSectionY, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 50,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f °C",
+                                id(temperatureGlobMin) + range / 2);
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 50,
+                              250, graphSectionY + 50, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 100,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f °C", id(temperatureGlobMin));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 100,
+                              250, graphSectionY + 100, front);
+
+          // =====================================
+          // 5️⃣ Rysowanie słupków
+          // =====================================
+
+          for (int i = 1; i < 48; i++) 
+          { 
+            float value = id(temperatureGlobArray)[i] - id(temperatureGlobMin);
+            float height = wide * value;
+
+            if (height < 0) height = 0;
+
+            id(t5_display)->filled_rectangle(
+                graphSectionX + 30 + i * 4,
+                graphSectionY + 100 - height,
+                3,
+                height,
+                front
+            );
+          }
+
+          // =====================================
+          // 6️⃣ Aktualne wartości
+          // =====================================
+
+          id(t5_display)->printf(graphSectionX + 80,
+                                graphSectionY - 100,
+                                id(currentTemperatureFont),
+                                front,
+                                TextAlign::CENTER,
+                                "%.1f°C",
+                                id(temperatureGlob));
+
+          id(t5_display)->printf(graphSectionX,
+                                graphSectionY - 75,
+                                id(fontMediumlIcons),
+                                front,
+                                TextAlign::CENTER,
+                                "\uf053");
+
+          id(t5_display)->printf(graphSectionX + 90,
+                                graphSectionY - 60,
+                                id(fontSmallText),
+                                front,
+                                TextAlign::CENTER,
+                                "%.1f°C",
+                                id(temperatureBalkonGlob));
+
+          id(drawTemep) = 1;
+
+          ESP_LOGD("TEMP", "---- END drawTemepratureGraph ----");
+
+
+  - id: collectHumidityData
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGD("HUM", "---- START collectHumidityData ----");
+
+          uint32_t loop_start = millis();
+
+          float humidity = getCurrentValue("sensor.kuchnia_humidity");
+          float humidityBalkon = getCurrentValue("sensor.balkon_humidity");
+
+          ESP_LOGD("HUM", "Current kitchen humidity: %.2f", humidity);
+          ESP_LOGD("HUM", "Current balkon humidity: %.2f", humidityBalkon);
+
+          float max = -10000;
+          float min = 10000;
+
+          for (int i = 1; i < 49; i++) 
+          {
+            uint32_t single_start = millis();
+
+            float value = generateTimeShiftedValue(48 - i, 30, "sensor.kuchnia_humidity");
+
+            uint32_t single_duration = millis() - single_start;
+
+            ESP_LOGD("HUM", "i=%d value=%.2f duration=%lu ms", i, value, single_duration);
+
+            if (value > max) max = value;
+            if (value < min) min = value;
+
+            id(humidityGlobArray)[i] = value;
+          }
+
+          id(humidityGlobMax) = max;
+          id(humidityGlobMin) = min;
+          id(humidityGlob) = humidity;
+          id(humidityBalkonGlob) = humidityBalkon;
+
+          uint32_t total_duration = millis() - loop_start;
+
+          ESP_LOGD("HUM", "Max=%.2f  Min=%.2f", max, min);
+          ESP_LOGD("HUM", "Loop duration: %lu ms", total_duration);
+          ESP_LOGD("HUM", "---- END collectHumidityData ----");
+
+
+  - id: drawHumidityGraph
+    mode: restart
+    then:
+      - lambda: |-
+
+          ESP_LOGD("HUM", "---- START drawHumidityGraph ----");
+
+          int graphSectionY = 360;
+          int graphSectionX = 280;      
+
+          Color back = Color(id(backGlob));
+          Color front = Color(id(frontGlob)); 
+
+          // ==============================
+          // 1️⃣ Sprawdzenie zakresu
+          // ==============================
+
+          if (id(humidityGlobMax) <= id(humidityGlobMin)) {
+            ESP_LOGW("HUM", "Invalid humidity range (max <= min), skipping graph");
+            return;
+          }
+
+          // ==============================
+          // 2️⃣ Sprawdzenie czy tablica ma dane
+          // ==============================
+
+          bool valid_data = false;
+          for (int i = 1; i < 49; i++) {
+            if (id(humidityGlobArray)[i] > 0) {
+              valid_data = true;
+              break;
+            }
+          }
+
+          if (!valid_data) {
+            ESP_LOGW("HUM", "Humidity array empty, skipping graph");
+            return;
+          }
+
+          // ==============================
+          // 3️⃣ Bezpieczne wyliczenie skali
+          // ==============================
+
+          float range = id(humidityGlobMax) - id(humidityGlobMin);
+          if (range < 0.1) range = 0.1;  // zabezpieczenie
+
+          float wide = 110 / range;
+
+          ESP_LOGD("HUM", "Range=%.2f  Scale=%.2f", range, wide);
+
+          // ==============================
+          // 4️⃣ Opisy osi
+          // ==============================
+
+          id(t5_display)->printf(graphSectionX, graphSectionY, id(wykres), front,
+                                TextAlign::CENTER, "%.1f %%", id(humidityGlobMax));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY, 500, graphSectionY, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 50, id(wykres), front,
+                                TextAlign::CENTER, "%.1f %%",
+                                id(humidityGlobMin) + range / 2);
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 50, 500,
+                              graphSectionY + 50, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 100, id(wykres), front,
+                                TextAlign::CENTER, "%.1f %%", id(humidityGlobMin));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 100, 500,
+                              graphSectionY + 100, front);
+
+          // ==============================
+          // 5️⃣ Rysowanie słupków
+          // ==============================
+
+          for (int i = 1; i < 49; i++) 
+          {
+            float value = id(humidityGlobArray)[i] - id(humidityGlobMin);
+            float height = wide * value;
+
+            if (height < 0) height = 0;
+
+            id(t5_display)->filled_rectangle(
+                graphSectionX + 30 + i * 4,
+                (graphSectionY + 100) - height,
+                3,
+                height,
+                front
+            );
+          }
+
+          // ==============================
+          // 6️⃣ Aktualne wartości
+          // ==============================
+
+          id(t5_display)->printf(graphSectionX + 80,
+                                graphSectionY - 100,
+                                id(currentTemperatureFont),
+                                front,
+                                TextAlign::CENTER,
+                                "%.1f%%",
+                                id(humidityGlob));
+
+          id(t5_display)->printf(graphSectionX,
+                                graphSectionY - 75,
+                                id(fontMediumlIcons),
+                                front,
+                                TextAlign::CENTER,
+                                "\uf07a");
+
+          id(t5_display)->printf(graphSectionX + 90,
+                                graphSectionY - 60,
+                                id(fontSmallText),
+                                front,
+                                TextAlign::CENTER,
+                                "%.1f%%",
+                                id(humidityBalkonGlob));
+
+          ESP_LOGD("HUM", "---- END drawHumidityGraph ----");
+
+  - id: collectPreasureData
+    mode: restart
+    then:
+      - lambda: |-
+
+          ESP_LOGD("PRESS", "---- START collectPreasureData ----");
+
+          float preasure = getCurrentValue("sensor.balkon_pressure");
+          ESP_LOGD("PRESS", "Current pressure = %.2f", preasure);
+
+          float max = -10000;
+          float min = 10000;
+          float testowa = 0;
+
+          bool valid_data = false;
+
+          for (int i = 1; i < 49; i++) 
+          {
+            testowa = generateTimeShiftedValue(48 - i, 30, "sensor.balkon_pressure");
+
+            ESP_LOGD("PRESS", "i=%d value=%.2f", i, testowa);
+
+            // pomijamy błędne wartości
+            if (testowa == -1 || testowa == 0) {
+              continue;
+            }
+
+            valid_data = true;
+
+            if (testowa > max) max = testowa;
+            if (testowa < min) min = testowa;
+
+            id(preasureGlobArray)[i] = testowa;
+          }
+
+          if (!valid_data) {
+            ESP_LOGW("PRESS", "No valid pressure data collected!");
+            return;
+          }
+
+          ESP_LOGD("PRESS", "Computed Max=%.2f  Min=%.2f", max, min);
+
+          id(preasureGlobMax) = max;
+          id(preasureGlobMin) = min;
+          id(preasureGlob) = preasure;
+
+          ESP_LOGD("PRESS", "---- END collectPreasureData ----");
+
+
+  - id: drawPreasureGraph
+    mode: restart
+    then:
+      - lambda: |-
+
+          ESP_LOGD("PRESS", "---- START drawPreasureGraph ----");
+
+          Color back = Color(id(backGlob));
+          Color front = Color(id(frontGlob)); 
+
+          int graphSectionY = 360;
+          int graphSectionX = 560;
+
+          // =====================================
+          // 1️⃣ Walidacja zakresu
+          // =====================================
+
+          if (id(preasureGlobMax) <= id(preasureGlobMin)) {
+            ESP_LOGW("PRESS", "Invalid pressure range (max <= min), skipping graph");
+            return;
+          }
+
+          // =====================================
+          // 2️⃣ Sprawdzenie czy tablica ma dane
+          // =====================================
+
+          bool valid_data = false;
+          for (int i = 1; i < 49; i++) {
+            if (id(preasureGlobArray)[i] != 0) {
+              valid_data = true;
+              break;
+            }
+          }
+
+          if (!valid_data) {
+            ESP_LOGW("PRESS", "Pressure array empty, skipping graph");
+            return;
+          }
+
+          // =====================================
+          // 3️⃣ Bezpieczna skala
+          // =====================================
+
+          float range = id(preasureGlobMax) - id(preasureGlobMin);
+          if (range < 0.1) range = 0.1;
+
+          float wide = 110 / range;
+
+          ESP_LOGD("PRESS", "Range=%.2f  Scale=%.2f", range, wide);
+
+          // =====================================
+          // 4️⃣ Opisy osi
+          // =====================================
+
+          id(t5_display)->printf(graphSectionX, graphSectionY,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f", id(preasureGlobMax));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY,
+                              800, graphSectionY, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 50,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f",
+                                id(preasureGlobMin) + range / 2);
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 50,
+                              800, graphSectionY + 50, front);
+
+          id(t5_display)->printf(graphSectionX, graphSectionY + 100,
+                                id(wykres), front,
+                                TextAlign::CENTER,
+                                "%.1f", id(preasureGlobMin));
+          id(t5_display)->line(graphSectionX + 20, graphSectionY + 100,
+                              800, graphSectionY + 100, front);
+
+          // =====================================
+          // 5️⃣ Rysowanie słupków
+          // =====================================
+
+          for (int i = 1; i < 49; i++) 
+          {
+            float value = id(preasureGlobArray)[i] - id(preasureGlobMin);
+            float height = wide * value;
+
+            if (height < 0) height = 0;
+
+            id(t5_display)->filled_rectangle(
+                graphSectionX + 30 + i * 4,
+                graphSectionY + 100 - height,
+                3,
+                height,
+                front
+            );
+          }
+
+          // =====================================
+          // 6️⃣ Aktualne wartości
+          // =====================================
+
+          id(t5_display)->printf(graphSectionX + 140,
+                                graphSectionY - 100,
+                                id(currentTemperatureFont),
+                                front,
+                                TextAlign::CENTER,
+                                "%.1f",
+                                id(preasureGlob));
+
+          id(t5_display)->printf(graphSectionX,
+                                graphSectionY - 120,
+                                id(fontSmallIcons),
+                                front,
+                                TextAlign::TOP_LEFT,
+                                "\uF050");
+
+          id(t5_display)->printf(graphSectionX,
+                                graphSectionY - 100,
+                                id(fontSmallIcons),
+                                front,
+                                TextAlign::TOP_LEFT,
+                                id(forecastWindDirectionGlobOpenMeteo).c_str());
+
+          id(t5_display)->printf(graphSectionX,
+                                graphSectionY - 70,
+                                id(fontSmallText),
+                                front,
+                                TextAlign::TOP_LEFT,
+                                "%s km/h",
+                                id(forecastWindSpeedGlobOpenMeteo).c_str());
+
+          ESP_LOGD("PRESS", "---- END drawPreasureGraph ----");
+
+interval:
+  - interval: 50ms
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // działa TYLKO w OTA mode
+              if (id(ota_mode) == 0) return false;
+
+              bool pressed = (digitalRead(4) == LOW);
+
+              if (id(green_ignore_until_release)) {
+                if (!pressed) id(green_ignore_until_release) = false;
+                id(green_last) = pressed;
+                return false;
+              }
+
+              bool rising = (pressed && !id(green_last));
+              id(green_last) = pressed;
+              return rising;
+          then:
+            - lambda: |-
+                id(ota_mode) = !id(ota_mode);
+                ESP_LOGI("BUTTON", "Green pressed (online) -> OTA mode=%d", id(ota_mode));
+            - script.execute: drawTime
+            - script.execute: displayRefresh
+            - if:
+                condition:
+                  lambda: 'return id(ota_mode) == 0;'
+                then:
+                  - deep_sleep.enter
